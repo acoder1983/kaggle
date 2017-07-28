@@ -13,7 +13,7 @@ class DataFrameSelecter(BaseEstimator,TransformerMixin):
         return self
     
     def transform(self,X,y=None):
-        return X[self.cols].values
+        return X[self.cols]
     
 class DataFrameSelecter2(BaseEstimator,TransformerMixin):
     def __init__(self,cols):
