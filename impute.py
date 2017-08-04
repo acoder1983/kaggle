@@ -22,6 +22,7 @@ class GroupImputer(BaseEstimator,TransformerMixin):
         
     def fit(self, X, y=None):
         df = pd.DataFrame(X,columns=self.cols)
+        df[self.impute_col]=df[self.impute_col].astype(float)
         self.medians=df.groupby(self.group_cols).median()[self.impute_col]
         return self
             
