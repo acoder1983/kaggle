@@ -1,16 +1,20 @@
 
 # coding: utf-8
 
-# In[27]:
+# In[35]:
 
 import pandas as pd
 from sklearn.preprocessing import Imputer,StandardScaler,LabelBinarizer,OneHotEncoder,LabelEncoder
 from sklearn.pipeline import Pipeline,FeatureUnion
-from label_binary import LabelBinarizerEx
+from onehot import LabelBinarizerEx
+from addcols import AddColumns
 
 class FeaturePipeline:
     def __init__(self,input_col,output_col,pipeline):
-        self.input_col=input_col
+        if isinstance(input_col,list):
+            self.input_cols=input_col
+        else:
+            self.input_cols=[input_col]
         self.output_col=output_col
         self.pipeline=pipeline
 
@@ -34,14 +38,14 @@ class DataFramePipeline:
         df_ret=df.copy()
         
         for p in self.pipelines:
-            data=p.pipeline.fit_transform(df_ret[[p.input_col]].values)
+            data=p.pipeline.fit_transform(df_ret[p.input_cols].values)
             last_step=p.pipeline.steps[-1][1]
             
             if isinstance(last_step,LabelBinarizerEx):
-                df_tmp=pd.DataFrame(p.pipeline.fit_transform(df_ret[[p.input_col]].values),columns=last_step.columns)
+                df_tmp=pd.DataFrame(p.pipeline.fit_transform(df_ret[p.input_cols].values),columns=last_step.columns)
                 df_ret=pd.concat([df_ret,df_tmp],axis=1)
             else:
-                df_ret[p.output_col]=p.pipeline.fit_transform(df_ret[[p.input_col]].values)
+                df_ret[p.output_col]=p.pipeline.fit_transform(df_ret[p.input_cols].values)
         
         return df_ret
     
@@ -75,18 +79,6 @@ class Test(ut.TestCase):
         self.assertEqual([0.,0.],list(t_df['id_imputed']))
         
         
-    def testMutipleCols(self):
-        df=pd.DataFrame({'id':[1.,1.],'name':[2.,np.nan]})
-        
-        dp=DataFramePipeline([FeaturePipeline('id','id_scaled',Pipeline([('scale',StandardScaler())])),
-                              FeaturePipeline('name','name_imputed',Pipeline([('impute',Imputer(strategy='most_frequent'))])),
-                      ])
-        t_df=dp.fit_transform(df)
-        
-        self.assertTrue(np.array_equal(np.array([[0.,2.],
-                                  [0.,2.]]),
-                         t_df[['id_scaled','name_imputed']].values))
-        
     def testLabelBinary2(self):
         df=pd.DataFrame({'sex':['male','female',np.nan]})
         
@@ -97,6 +89,19 @@ class Test(ut.TestCase):
         self.assertEqual([0,1,0],list(t_df['sex_female']))
         self.assertEqual([1,0,0],list(t_df['sex_male']))
         
+    def testMutipleCols(self):
+        df=pd.DataFrame({'id':[1.,1.],'name':[2.,np.nan],'fare':[2.,3.]})
+        
+        dp=DataFramePipeline([FeaturePipeline('id','id_scaled',Pipeline([('scale',StandardScaler())])),
+                              FeaturePipeline('name','name_imputed',Pipeline([('impute',Imputer(strategy='most_frequent'))])),
+                              FeaturePipeline(['id','fare'],'id_fare',Pipeline([('add',AddColumns())])),
+                      ])
+        t_df=dp.fit_transform(df)
+        
+        self.assertTrue(np.array_equal(np.array([
+            [0.,2.,3.],
+            [0.,2.,4.],
+        ]),t_df[['id_scaled','name_imputed','id_fare']].values))
         
 if __name__ == '__main__':
     ut.main(argv=['ignored', '-v'], exit=False)
