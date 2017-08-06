@@ -38,7 +38,6 @@ class DataFramePipeline:
         df_ret=df.copy()
         
         for p in self.pipelines:
-            data=p.pipeline.fit_transform(df_ret[p.input_cols].values)
             last_step=p.pipeline.steps[-1][1]
             
             if isinstance(last_step,LabelBinarizerEx):
@@ -50,8 +49,18 @@ class DataFramePipeline:
         return df_ret
     
     def transform(self,df):
-        data=self.full_pipeline.transform(df)
-        return pd.DataFrame(data,columns=self.columns)
+        df_ret=df.copy()
+        
+        for p in self.pipelines:
+            last_step=p.pipeline.steps[-1][1]
+            
+            if isinstance(last_step,LabelBinarizerEx):
+                df_tmp=pd.DataFrame(p.pipeline.transform(df_ret[p.input_cols].values),columns=last_step.columns)
+                df_ret=pd.concat([df_ret,df_tmp],axis=1)
+            else:
+                df_ret[p.output_col]=p.pipeline.transform(df_ret[p.input_cols].values)
+        
+        return df_ret
     
 import unittest as ut
 import numpy as np
