@@ -62,6 +62,15 @@ class DataFramePipeline:
         
         return df_ret
     
+    def fit(self,df):
+        df_ret=df.copy()
+        
+        for p in self.pipelines:
+            last_step=p.pipeline.steps[-1][1]
+            
+            p.pipeline.fit(df_ret[p.input_cols].values)
+        
+    
 import unittest as ut
 import numpy as np
 from util import *

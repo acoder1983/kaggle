@@ -4,3 +4,4 @@ __pycache__/
 result.csv
 quora/
 raw_data/
+output/
