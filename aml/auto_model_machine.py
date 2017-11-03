@@ -1,51 +1,98 @@
 # coding: utf-8
-
+from __future__ import division
 import sklearn
 from sklearn.linear_model import LogisticRegression
 from sklearn.base import BaseEstimator
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_val_score,StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score
 from collections import Counter
+import time
 
 BASE_CLASSIFY_MODELS=[
-    LogisticRegression(random_state=0),
-    RandomForestClassifier(random_state=0),
-    SVC(),
+    LogisticRegression(random_state=42,n_jobs=4),
+    # RandomForestClassifier(random_state=42),
+    # SVC(),
 ]
+
+BASE_MODEL_PARAMS=[
+    {'C':[0.001,0.01,0.1,1,10,100,1000],'penalty':['l1','l2'],'class_weight':['balanced',None]}
+]
+
+def buildBaseModels(models,params):
+    baseModels=[]
+    for m,p in zip(models,params):
+        keys = list(p.keys())
+        k_cursors=[[len(p[k]),0] for k in keys]
+        while k_cursors[0][1]<k_cursors[0][0]:
+            mo = sklearn.clone(m)
+            kv=mo.get_params()
+            for i,kc in enumerate(k_cursors):
+                kv[keys[i]]=p[keys[i]][kc[1]]
+            mo.set_params(**kv)
+            baseModels.append(mo)
+            for i in range(len(keys)-1,-1,-1):
+                if k_cursors[i][1]<k_cursors[i][0]-1:
+                    k_cursors[i][1]+=1
+                    break
+                else:
+                    if i == 0:
+                        k_cursors[i][1]+=1
+                    else:
+                        k_cursors[i][1]=0
+                
+    return baseModels
 
 class BinaryClassifier(BaseEstimator):
     
     def __init__(self):
-        self.base_models=_buildBaseModels()
+        self.base_models=buildBaseModels(BASE_CLASSIFY_MODELS, BASE_MODEL_PARAMS)
         
     def fit(self,X,y):
-        base_scores=_calc_base_model_scores(self.base_models)
-        models_and_scores=enumerate(base_scores)
-        last_ens_score=0.
-        ens_score=base_scores[0]
+        skf=StratifiedKFold(random_state=42)
+        for train_idx,test_idx in skf.split(X,y):
+            X_train=X[train_idx]
+            y_train=y[train_idx]
+            X_test =X[test_idx]
+            y_test =y[test_idx]
+            break
+        model_probs=[self._calc_prob(m,X_train,y_train,X_test) for m in self.base_models]
+        ensembles=[Counter({i:1}) for i in range(len(self.base_models))]
+        en_scores=[self._calc_en_score(en,model_probs,y_test) for en in ensembles]
         MIN_EPS=1e-3
-        emsemble=Counter()
-        while True:
-            for m in self.base_models:
-                ens_copy=ensemble.copy()
-                ens_copy.append(m)
-                ens_copy_score=_calc_score(ens_copy)
-                if ens_copy_score > ens_score:
-                    ensemble.append(m)
-                    last_ens_score=ens_score
-                    ens_score=ens_copy_score
-                    if ens_score-last_ens_score<=MIN_EPS:
+        for i, en in enumerate(ensembles):
+            while True:
+                find_m=False
+                for k in range(len(self.base_models)):
+                    en_copy=ensemble.copy()
+                    en_copy.update({k:1})
+                    en_copy_score=_calc_en_score(en_copy)
+                    if en_copy_score - en_scores[i] > MIN_EPS:
+                        ensembles[i]=en_copy
+                        en_scores[i]=en_copy_score
+                        find_m=True
                         break
+                if not find_m:
+                    break
 
-        for m_i in ensemble:
-            
-        scores=[cross_val_score(m,X,y,scoring='accuracy',cv=5).mean() 
-            for m in self.base_models]
-        self.best_model, self.best_score=sorted(zip(self.base_models,scores),key=lambda x:x[1],reverse=True)[0]
-        # print(self.best_model,self.best_score)
+        print(sorted(zip(en_scores,ensembles),key=lambda x:x[0],reverse=True)[:5])
         return self
     
+    def _calc_prob(self,model, X_train,y_train,X_test):
+        m.fit(X_train,y_train)
+        return m.predict_proba(X_test)
+
+    def _calc_en_score(self,ensemble,model_probs,y_test):
+        prob=0.
+        cnt=0
+        for m_i,m_c in ensemble.items():
+            prob += model_probs[m_i]*m_c
+            cnt+=m_c
+        avg_prob=prob/cnt
+        y_pred=avg_prob>0.5
+        return accuracy_score(y_test,y_pred)
+
     def predict(self,X):
         return self.best_model.predict(X)
     
@@ -57,7 +104,14 @@ class BinaryClassifier(BaseEstimator):
 import unittest as ut
 
 class TestAutoClassifier(ut.TestCase):
-    def test(self):
+    def testBuildBaseModels(self):
+        models=buildBaseModels([LogisticRegression()],
+        [{'C':[0.001,0.01,0.1,1,10,100,1000],'penalty':['l1','l2'],'class_weight':['balanced',None]}])
+        # self.assertEqual(2,len(models))
+        # self.assertEqual(10, models[1].C)
+        self.assertEqual(28,len(models))
+
+    def testFit(self):
         pass
 
 if __name__ == '__main__':
