@@ -11,7 +11,7 @@ from collections import Counter
 import time
 
 BASE_CLASSIFY_MODELS=[
-    LogisticRegression(random_state=42,n_jobs=4),
+    LogisticRegression(random_state=42,n_jobs=1),
     # RandomForestClassifier(random_state=42),
     # SVC(),
 ]
@@ -57,7 +57,7 @@ class BinaryClassifier(BaseEstimator):
             X_test =X[test_idx]
             y_test =y[test_idx]
             break
-        model_probs=[self._calc_prob(m,X_train,y_train,X_test) for m in self.base_models]
+        model_probs=[self._calc_prob(m,X_train,y_train,X_test) for m in self.base_models[:1]]
         ensembles=[Counter({i:1}) for i in range(len(self.base_models))]
         en_scores=[self._calc_en_score(en,model_probs,y_test) for en in ensembles]
         MIN_EPS=1e-3
@@ -80,8 +80,13 @@ class BinaryClassifier(BaseEstimator):
         return self
     
     def _calc_prob(self,model, X_train,y_train,X_test):
-        m.fit(X_train,y_train)
-        return m.predict_proba(X_test)
+        print(model)
+        model.fit(X_train,y_train)
+        print(X_train.shape,y_train.shape,X_test.shape)
+        # prob= model.predict_proba(X_test)
+        # print(X_test[:3],prob[:3])
+        print(model.predict_proba(X_train[:1]),model.predict_proba(X_test[:1]))
+        return prob
 
     def _calc_en_score(self,ensemble,model_probs,y_test):
         prob=0.
