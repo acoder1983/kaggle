@@ -9,6 +9,7 @@ from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score
 from collections import Counter
 import time
+import numpy as np
 
 BASE_CLASSIFY_MODELS=[
     LogisticRegression(random_state=42,n_jobs=1),
@@ -17,7 +18,8 @@ BASE_CLASSIFY_MODELS=[
 ]
 
 BASE_MODEL_PARAMS=[
-    {'C':[0.001,0.01,0.1,1,10,100,1000],'penalty':['l1','l2'],'class_weight':['balanced',None]}
+    {'C':[0.001,0.01,0.1,1,10,100,1000],'penalty':['l1','l2'],'class_weight':['balanced',None]},
+    # {'penalty':['l1','l2']}
 ]
 
 def buildBaseModels(models,params):
@@ -57,7 +59,7 @@ class BinaryClassifier(BaseEstimator):
             X_test =X[test_idx]
             y_test =y[test_idx]
             break
-        model_probs=[self._calc_prob(m,X_train,y_train,X_test) for m in self.base_models[:1]]
+        model_probs=[self._calc_prob(m,X_train,y_train,X_test) for m in self.base_models]
         ensembles=[Counter({i:1}) for i in range(len(self.base_models))]
         en_scores=[self._calc_en_score(en,model_probs,y_test) for en in ensembles]
         MIN_EPS=1e-3
@@ -65,9 +67,9 @@ class BinaryClassifier(BaseEstimator):
             while True:
                 find_m=False
                 for k in range(len(self.base_models)):
-                    en_copy=ensemble.copy()
+                    en_copy=ensembles[i].copy()
                     en_copy.update({k:1})
-                    en_copy_score=_calc_en_score(en_copy)
+                    en_copy_score=self._calc_en_score(en_copy,model_probs,y_test)
                     if en_copy_score - en_scores[i] > MIN_EPS:
                         ensembles[i]=en_copy
                         en_scores[i]=en_copy_score
@@ -80,13 +82,10 @@ class BinaryClassifier(BaseEstimator):
         return self
     
     def _calc_prob(self,model, X_train,y_train,X_test):
-        print(model)
         model.fit(X_train,y_train)
-        print(X_train.shape,y_train.shape,X_test.shape)
-        # prob= model.predict_proba(X_test)
-        # print(X_test[:3],prob[:3])
-        print(model.predict_proba(X_train[:1]),model.predict_proba(X_test[:1]))
+        prob=model.predict_proba(X_test)
         return prob
+
 
     def _calc_en_score(self,ensemble,model_probs,y_test):
         prob=0.
@@ -95,7 +94,8 @@ class BinaryClassifier(BaseEstimator):
             prob += model_probs[m_i]*m_c
             cnt+=m_c
         avg_prob=prob/cnt
-        y_pred=avg_prob>0.5
+        cls_idx=(avg_prob[:,0]<avg_prob[:,1]).astype('int')
+        y_pred=np.array([self.base_models[0].classes_[i] for i in cls_idx])
         return accuracy_score(y_test,y_pred)
 
     def predict(self,X):
