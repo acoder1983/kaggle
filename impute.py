@@ -66,7 +66,9 @@ class MixImputer(TransformerMixin):
     def transform(self, X, y=None):
         return X.fillna(self.fill)
     
-    
+    def fit_transform(self,X,y=None):
+        self.fit(X)
+        return self.transform(X)
     
 import unittest as ut
 

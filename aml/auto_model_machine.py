@@ -1,6 +1,7 @@
 # coding: utf-8
 from __future__ import division
 
+import sys
 import copy
 import time
 import unittest as ut
@@ -16,17 +17,21 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.svm import SVC
 
 BASE_CLASSIFY_MODELS = [
-    (LogisticRegression(random_state=42, n_jobs=1),
-     {'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000], 'penalty':['l1', 'l2'], 'class_weight':['balanced', None]}),
+    (LogisticRegression(random_state=42),
+     {'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000], 'penalty':['l1', 'l2']}),
 
     (RandomForestClassifier(random_state=42),
-     {'n_estimators': [10, 50, 100, 500], 'max_depth':[5, 8], 'criterion':['gini', 'entropy']}),
+     {'n_estimators': [10, 50, 100, 500], 'max_depth':[None, 3, 5, 8],
+      'max_features':[None, 'sqrt']}),
 
-    (GradientBoostingClassifier(random_state=42),
-     {'n_estimators': [100, 300, 500, 1000], 'max_depth':[3, 5], 'learning_rate':[0.01, 0.1, 1.0]}),
+    # (GradientBoostingClassifier(random_state=42),
+    #  {'n_estimators': [100, 500], 'max_depth':[3, 5, 8], 'learning_rate':[0.01, 0.1],
+    #   'max_features':[None, 'sqrt'],
+    #   'subsample':[1.0, 0.8, 0.6]
+    #   }),
 
-    (SVC(probability=True),
-     {'C': [1., 10., ], 'kernel':['rbf', 'poly'], 'gamma':[0.01, 0.1, 1.], 'coef0':[1., 10., ]})
+    # (SVC(probability=True, random_state=42),
+    #  {'C': [1., 10., 100], 'kernel':['linear', 'sigmoid', 'rbf', 'poly'], 'gamma':[0.001, 0.01, 0.1, 1.]})
 
 ]
 
@@ -34,7 +39,7 @@ BASE_CLASSIFY_MODELS = [
 def buildBaseModels(models):
     baseModels = []
     for m, p in models:
-        keys = list(p.keys())
+        keys = sorted(list(p.keys()))
         k_cursors = [[len(p[k]), 0] for k in keys]
         while k_cursors[0][1] < k_cursors[0][0]:
             mo = sklearn.clone(m)
@@ -58,20 +63,36 @@ def buildBaseModels(models):
 
 class BinaryClassifier(BaseEstimator):
 
-    def __init__(self):
-        self.base_models = buildBaseModels(BASE_CLASSIFY_MODELS)
+    def __init__(self, base_models, sorted_ensembles=None, best_en_idx=0, logger=None):
+        self.base_models = base_models
+        self.sorted_ensembles = sorted_ensembles
+        self.best_en_idx = best_en_idx
+        self.logger = logger
 
-    def fit(self, X, y):
-        skf = StratifiedKFold(random_state=42,n_splits=5)
+    def get_params(self, deep=True):
+        return {
+            'base_models': self.base_models,
+            'sorted_ensembles': self.sorted_ensembles,
+            'best_en_idx': self.best_en_idx
+        }
+
+    def auto(self, X, y, cv=3):
+        skf = StratifiedKFold(random_state=42, n_splits=cv)
         kfolds = list(skf.split(X, y))
-        model_probs = [self._calc_prob(m, X, y, kfolds)
-                       for m in self.base_models]
+        model_probs = []
+        en_scores = []
+        model_scores = []
+        for i, m in enumerate(self.base_models):
+            prob, score = self._calc_model_score(m, X, y, kfolds)
+            model_probs.append(prob)
+            en_scores.append(score)
+            model_scores.append(score)
+            self.logger.info(
+                'calc score [%d] [%.3f] for %s classes %s' % (i, score, m, m.classes_))
+
         ensembles = [Counter({i: 1}) for i in range(len(self.base_models))]
-        en_scores = [self._calc_en_score(
-            en, model_probs, y, kfolds) for en in ensembles]
         MIN_EPS = 1e-3
         for i, en in enumerate(ensembles):
-            print('build ensemble%d ...' % i)
             while True:
                 find_m = False
                 for k in range(len(self.base_models)):
@@ -86,38 +107,51 @@ class BinaryClassifier(BaseEstimator):
                         break
                 if not find_m:
                     break
+            # self.logger.info('ensemble [%d] score %.3f' % (i, en_scores[i]))
+            sys.stdout.write('.')
+        sys.stdout.flush()
 
-        self.best_ens = sorted(zip(en_scores, ensembles),
-                               key=lambda x: x[0], reverse=True)
-        self.fit_one(0, X, y)
-        self._printEn(self.best_ens[:5])
+        self.logger.info('top ensembles')
+        self.sorted_ensembles = sorted(zip(en_scores, ensembles),
+                                       key=lambda x: x[0], reverse=True)
+        for en in self.sorted_ensembles:
+            self.logger.info('%.3f %s' % (en[0], en[1]))
+        self.best_en_idx = 0
+
+        self.logger.info('top models')
+        self.sorted_base_models = sorted(
+            enumerate(model_scores), key=lambda x: x[1], reverse=True)
+        for i, s in self.sorted_base_models:
+            self.logger.info('%.3f [%d]' % (s, i))
 
         return self
 
-    def fit_one(self, en_idx, X, y):
+    def fit(self, X, y):
         self.best_model = [(self.base_models[i].fit(X, y), w)
-                           for i, w in self.best_ens[en_idx][1].items()]
+                           for i, w in self.sorted_ensembles[self.best_en_idx][1].items()]
 
-    def _printEn(self, top_ens):
-        for te in top_ens:
-            print(te)
-        top_models = Counter()
-        for sc, en in top_ens:
-            top_models += en
-        for m in sorted(top_models.keys()):
-            print(m, self.base_models[m])
+    def select(self, en_idx):
+        self.best_en_idx = en_idx
 
-    def _calc_prob(self, model, X, y, kfolds):
-        print('calc prob for %s' % model.__class__.__name__)
+    def getNthBestBaseModel(self, m_idx):
+        return self.base_models[self.sorted_base_models[m_idx][0]]
+
+    def _calc_model_score(self, model, X, y, kfolds):
         probs = []
+        score = 0.
         for tr_i, ts_i in kfolds:
             X_train = X[tr_i]
             y_train = y[tr_i]
             X_test = X[ts_i]
+            y_test = y[ts_i]
             model.fit(X_train, y_train)
             prob = model.predict_proba(X_test)
+            cls_idx = (prob[:, 0] < prob[:, 1]).astype('int')
+            y_pred = np.array([model.classes_[i]
+                               for i in cls_idx])
+            score += accuracy_score(y_test, y_pred)
             probs.append(prob)
-        return probs
+        return probs, score / len(kfolds)
 
     def _calc_en_score(self, ensemble, model_probs, y, kfolds):
         score = 0.
@@ -135,14 +169,15 @@ class BinaryClassifier(BaseEstimator):
         return score / len(kfolds)
 
     def predict(self, X):
-        probs = np.zeros((X.shape[0], 2))
+        probs = 0.
         weights = 0
         for m, w in self.best_model:
             probs += m.predict_proba(X) * w
             weights += w
         avg_prob = probs / weights
         cls_idx = (avg_prob[:, 0] < avg_prob[:, 1]).astype('int')
-        y_pred = np.array([self.base_models[0].classes_[i] for i in cls_idx])
+        # y_pred = np.array([self.base_models[0].classes_[i] for i in cls_idx])
+        y_pred = cls_idx
         return y_pred
 
     def fit_score(self):
