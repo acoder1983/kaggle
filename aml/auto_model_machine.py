@@ -138,17 +138,18 @@ class BinaryClassifier(BaseEstimator):
 
         sorted_base_models = sorted(
             enumerate(model_scores), key=lambda x: x[1], reverse=True)
-        drop_model_size=int(len(model_scores)/2)
-        for i,_ in list(sorted_base_models)[drop_model_size:]:
-            print(i)
-            del base_models[i]
-            del model_probs[i]
-            del model_scores[i]
-        sorted_base_models = sorted(
-            enumerate(model_scores), key=lambda x: x[1], reverse=True)
+        # keep_model_size=int(len(model_scores)/2)
+        # bm=[]
+        # mp=[]
+        # ms=[]
+        # for i,_ in list(sorted_base_models)[drop_model_size:]:
+        #     del base_models[i]
+        #     del model_probs[i]
+        #     del model_scores[i]
+        # sorted_base_models = sorted(
+        #     enumerate(model_scores), key=lambda x: x[1], reverse=True)
 
         en_scores = model_scores.copy()
-
         ensembles = [Counter({i: 1}) for i in range(len(base_models))]
         MIN_EPS = 1e-3
         for i, en in enumerate(ensembles):
