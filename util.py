@@ -74,10 +74,11 @@ class NanDropper(BaseEstimator, TransformerMixin):
 
 
 def initLogging(log_name):
-    LOG_FILE = 'log/%s.log'%log_name
+    LOG_FILE = 'log/%s.log' % log_name
     if os.path.exists(LOG_FILE):
         os.remove(LOG_FILE)
 
+    handlers = []
     handler = logging.FileHandler(LOG_FILE)  # 实例化handler
     fmt = '%(asctime)s - %(message)s'
 
@@ -86,17 +87,21 @@ def initLogging(log_name):
 
     logger = logging.getLogger(log_name)    # 获取名为tst的logger
     logger.addHandler(handler)           # 为logger添加handler
+    handlers.append(handler)
 
     handler = logging.StreamHandler()
     handler.setFormatter(formatter)
     logger.addHandler(handler)
+    handlers.append(handler)
 
     logger.setLevel(logging.DEBUG)
-    return logger
-
-# In[43]:
+    return logger, handlers
 
 
+def resetLogging(logger, handlers):
+    for h in handlers:
+        h.close()
+        logger.removeHandler(h)
 
 
 class Test(ut.TestCase):
