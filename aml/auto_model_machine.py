@@ -37,9 +37,11 @@ BASE_CLASSIFY_MODELS = {
              }),
 
     'svc': (SVC(probability=True, random_state=42),
-            {'C': [1., 10., 100],
-             'gamma': [0.001, 0.01, 0.1, 1.],
-             'kernel': ['linear', 'sigmoid', 'rbf', 'poly'], }),
+            {'C': [1., 10.],
+             'gamma': [0.001, 0.01, 0.1, 'auto'],
+             'kernel': ['linear', 'rbf', 'poly'],
+             'coef0': [0., 1., 10., ],
+             }),
 
     'knn': (KNeighborsClassifier(),
             {'n_neighbors': [3, 5, 8],
@@ -113,7 +115,8 @@ class BinaryClassifier(BaseEstimator):
         model_probs = []
         model_scores = []
         for i, m in enumerate(base_models):
-
+            logger.info('begin [%d] for %s' % (i, m))
+            t = time.time()
             m_i = BinaryClassifier._get_model_idx(m, last_result)
             if m_i == -1:
                 prob, score = BinaryClassifier._calc_model_score(
@@ -129,8 +132,8 @@ class BinaryClassifier(BaseEstimator):
             model_probs.append(prob)
             model_scores.append(score)
             logger.info(
-                'calc score [%d] [%.3f] for %s' % (i, score, m))
-        
+                'score %.3f time %d' % (score, int(time.time() - t)))
+
         if len(last_result) == 0:
             last_result['base_models'] = base_models
             last_result['model_probs'] = model_probs
@@ -138,16 +141,19 @@ class BinaryClassifier(BaseEstimator):
 
         sorted_base_models = sorted(
             enumerate(model_scores), key=lambda x: x[1], reverse=True)
-        # keep_model_size=int(len(model_scores)/2)
-        # bm=[]
-        # mp=[]
-        # ms=[]
-        # for i,_ in list(sorted_base_models)[drop_model_size:]:
-        #     del base_models[i]
-        #     del model_probs[i]
-        #     del model_scores[i]
-        # sorted_base_models = sorted(
-        #     enumerate(model_scores), key=lambda x: x[1], reverse=True)
+        keep_model_size = int(len(model_scores) / 2)
+        bm = []
+        mp = []
+        ms = []
+        for i, _ in list(sorted_base_models)[:keep_model_size]:
+            bm.append(base_models[i])
+            mp.append(model_probs[i])
+            ms.append(model_scores[i])
+        base_models = bm
+        model_probs = mp
+        model_scores = ms
+        sorted_base_models = sorted(
+            enumerate(model_scores), key=lambda x: x[1], reverse=True)
 
         en_scores = model_scores.copy()
         ensembles = [Counter({i: 1}) for i in range(len(base_models))]
@@ -178,11 +184,9 @@ class BinaryClassifier(BaseEstimator):
         best_en_idx = 0
 
         logger.info('top models')
-        
+
         for i, s in sorted_base_models:
             logger.info('%.3f [%d]' % (s, i))
-
-        
 
         return BinaryClassifier(**{'base_models': base_models,
                                    'sorted_ensembles': sorted_ensembles,
