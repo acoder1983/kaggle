@@ -9,7 +9,9 @@ from collections import Counter
 
 import numpy as np
 import pandas as pd
+import random
 import sklearn
+from sklearn.utils import check_random_state
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -82,17 +84,15 @@ def _build_base_models(labels, meta_models):
 
 class BinaryClassifier(BaseEstimator):
 
-    def __init__(self, base_models=None, sorted_base_models=None, sorted_ensembles=None, best_en_idx=0):
+    def __init__(self, base_models=None, sorted_base_models=None, ensemble=None):
         self.base_models = base_models
         self.sorted_base_models = sorted_base_models
-        self.sorted_ensembles = sorted_ensembles
-        self.best_en_idx = best_en_idx
+        self.ensemble = ensemble
 
     def get_params(self, deep=True):
         return {
             'base_models': self.base_models,
-            'sorted_ensembles': self.sorted_ensembles,
-            'best_en_idx': self.best_en_idx
+            'ensemble': self.ensemble,
         }
 
     @staticmethod
@@ -105,6 +105,18 @@ class BinaryClassifier(BaseEstimator):
         return -1
 
     @staticmethod
+    def _model_info(model):
+        info = model.__class__.__name__ + ' {'
+        for _, meta in BASE_CLASSIFY_MODELS.items():
+            if meta[0].__class__ == model.__class__:
+                pars = sorted(meta[1].keys())
+                for p in pars:
+                    info += '%s = %s, ' % (p, model.get_params()[p])
+                break
+        info = info[:len(info) - 2] + '}'
+        return info
+
+    @staticmethod
     def hillclimbing(X, y, model_labels=None, last_result={}, cv=3, logger=None):
 
         base_models = _build_base_models(model_labels, BASE_CLASSIFY_MODELS)
@@ -112,25 +124,31 @@ class BinaryClassifier(BaseEstimator):
         skf = StratifiedKFold(random_state=42, n_splits=cv)
         kfolds = list(skf.split(X, y))
 
+        # train base models
         model_probs = []
         model_scores = []
+        model_scores_std = []
         for i, m in enumerate(base_models):
-            logger.info('begin [%d] for %s' % (i, m))
+            logger.info('begin [%d] for %s' %
+                        (i, BinaryClassifier._model_info(m)))
             t = time.time()
             m_i = BinaryClassifier._get_model_idx(m, last_result)
             if m_i == -1:
-                prob, score = BinaryClassifier._calc_model_score(
+                prob, score, std = BinaryClassifier._calc_model_score(
                     m, X, y, kfolds)
                 if len(last_result) > 0:
                     last_result['base_models'].append(m)
                     last_result['model_probs'].append(prob)
                     last_result['model_scores'].append(score)
+                    last_result['model_scores_std'].append(std)
             else:
                 prob = last_result['model_probs'][m_i]
                 score = last_result['model_scores'][m_i]
+                std = last_result['model_scores_std'][m_i]
 
             model_probs.append(prob)
             model_scores.append(score)
+            model_scores_std.append(std)
             logger.info(
                 'score %.3f time %d' % (score, int(time.time() - t)))
 
@@ -138,64 +156,63 @@ class BinaryClassifier(BaseEstimator):
             last_result['base_models'] = base_models
             last_result['model_probs'] = model_probs
             last_result['model_scores'] = model_scores
+            last_result['model_scores_std'] = model_scores_std
 
+        # keep better models
         sorted_base_models = sorted(
             enumerate(model_scores), key=lambda x: x[1], reverse=True)
-        keep_model_size = int(len(model_scores) / 2)
-        bm = []
-        mp = []
-        ms = []
-        for i, _ in list(sorted_base_models)[:keep_model_size]:
-            bm.append(base_models[i])
-            mp.append(model_probs[i])
-            ms.append(model_scores[i])
-        base_models = bm
-        model_probs = mp
-        model_scores = ms
-        sorted_base_models = sorted(
-            enumerate(model_scores), key=lambda x: x[1], reverse=True)
+        keep_model_size = int(len(model_scores) / 5)
+        keep_model_idxs = [i for i, _ in list(sorted_base_models)[
+            :keep_model_size]]
 
-        en_scores = model_scores.copy()
-        ensembles = [Counter({i: 1}) for i in range(len(base_models))]
+        # make ensembles
+        en_times = 20
+        rs = check_random_state(42)
+        bag_frac = 0.25
+        best_n = 3
         MIN_EPS = 1e-3
-        for i, en in enumerate(ensembles):
+        ensemble = Counter()
+        for i in range(en_times):
+            idxs = rs.permutation(keep_model_idxs)
+            cand_idxs = idxs[:int(len(idxs) * bag_frac)]
+            ens = Counter(cand_idxs[:best_n])
+            en_score, _ = BinaryClassifier._calc_en_score(
+                ens, base_models, model_probs, y, kfolds)
             while True:
                 find_m = False
-                for k in range(len(base_models)):
-                    en_copy = ensembles[i].copy()
+                for k in cand_idxs:
+                    en_copy = ens.copy()
                     en_copy.update({k: 1})
-                    en_copy_score = BinaryClassifier._calc_en_score(
+                    en_copy_score, _ = BinaryClassifier._calc_en_score(
                         en_copy, base_models, model_probs, y, kfolds)
-                    if en_copy_score - en_scores[i] > MIN_EPS:
-                        ensembles[i] = en_copy
-                        en_scores[i] = en_copy_score
+                    if en_copy_score - en_score > MIN_EPS:
+                        ens = en_copy
+                        en_score = en_copy_score
                         find_m = True
                         break
                 if not find_m:
                     break
-            sys.stdout.write('.')
-        sys.stdout.flush()
-
-        logger.info('top ensembles')
-        sorted_ensembles = sorted(zip(en_scores, ensembles),
-                                  key=lambda x: x[0], reverse=True)
-        for en in sorted_ensembles:
-            logger.info('%.3f %s' % (en[0], en[1]))
-        best_en_idx = 0
+            ensemble += ens
+            logger.info('ensembling %d %s' % (i, ens))
 
         logger.info('top models')
-
         for i, s in sorted_base_models:
-            logger.info('%.3f [%d]' % (s, i))
+            logger.info('[%d] %.3f %.3f %s' %
+                        (i, s, model_scores_std[i], BinaryClassifier._model_info(base_models[i])))
+
+        en_score, en_score_std = BinaryClassifier._calc_en_score(
+            ensemble, base_models, model_probs, y, kfolds)
+        logger.info('ensemble result %.3f, %.3f, %s' %
+                    (en_score, en_score_std, ensemble))
 
         return BinaryClassifier(**{'base_models': base_models,
-                                   'sorted_ensembles': sorted_ensembles,
                                    'sorted_base_models': sorted_base_models,
+                                   'ensemble': ensemble,
                                    })
 
     def fit(self, X, y):
         self.best_model = [(self.base_models[i].fit(X, y), w)
-                           for i, w in self.sorted_ensembles[self.best_en_idx][1].items()]
+                           for i, w in self.ensemble.items()]
 
     def select(self, en_idx):
         self.best_en_idx = en_idx
@@ -207,6 +224,7 @@ class BinaryClassifier(BaseEstimator):
     def _calc_model_score(model, X, y, kfolds):
         probs = []
         score = 0.
+        scores = []
         for tr_i, ts_i in kfolds:
             X_train = X.loc[tr_i]
             y_train = y.loc[tr_i]
@@ -218,12 +236,14 @@ class BinaryClassifier(BaseEstimator):
             # y_pred = np.array([model.classes_[i]
             #                    for i in cls_idx])
             score += accuracy_score(y_test, y_pred)
+            scores.append(score)
             probs.append(prob)
-        return probs, score / len(kfolds)
+        return probs, score / len(kfolds), np.std(scores)
 
     @staticmethod
     def _calc_en_score(ensemble, base_models, model_probs, y, kfolds):
         score = 0.
+        scores = []
         for i, (_, ts_i) in enumerate(kfolds):
             probs = 0.
             weights = 0
@@ -235,7 +255,8 @@ class BinaryClassifier(BaseEstimator):
             # y_pred = np.array([base_models[0].classes_[i]
             #                    for i in cls_idx])
             score += accuracy_score(y[ts_i], y_pred)
-        return score / len(kfolds)
+            scores.append(score)
+        return score / len(kfolds), np.std(scores)
 
     def predict(self, X):
         probs = 0.
