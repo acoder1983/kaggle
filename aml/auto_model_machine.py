@@ -53,47 +53,48 @@ BASE_CLASSIFY_MODELS = {
 }
 
 
-def _build_base_models(labels, meta_models):
-    base_models = []
-    for l, meta in meta_models.items():
-        if l not in labels:
-            continue
-        m = meta[0]
-        p = meta[1]
-        keys = sorted(list(p.keys()))
-        k_cursors = [[len(p[k]), 0] for k in keys]
-        while k_cursors[0][1] < k_cursors[0][0]:
-            mo = sklearn.clone(m)
-            kv = mo.get_params()
-            for i, kc in enumerate(k_cursors):
-                kv[keys[i]] = p[keys[i]][kc[1]]
-            mo.set_params(**kv)
-            base_models.append(mo)
-            for i in range(len(keys) - 1, -1, -1):
-                if k_cursors[i][1] < k_cursors[i][0] - 1:
-                    k_cursors[i][1] += 1
-                    break
-                else:
-                    if i == 0:
-                        k_cursors[i][1] += 1
-                    else:
-                        k_cursors[i][1] = 0
-
-    return base_models
-
-
 class BinaryClassifier(BaseEstimator):
 
-    def __init__(self, base_models=None, sorted_base_models=None, ensemble=None):
+    def __init__(self, base_models, level1_models, cv):
         self.base_models = base_models
-        self.sorted_base_models = sorted_base_models
-        self.ensemble = ensemble
+        self.level1_models = level1_models
+        self.cv = cv
 
     def get_params(self, deep=True):
         return {
             'base_models': self.base_models,
-            'ensemble': self.ensemble,
+            'level1_models': self.level1_models,
+            'cv': self.cv,
         }
+
+    @staticmethod
+    def _build_base_models(labels, meta_models):
+        base_models = []
+        for l, meta in meta_models.items():
+            if l not in labels:
+                continue
+            m = meta[0]
+            p = meta[1]
+            keys = sorted(list(p.keys()))
+            k_cursors = [[len(p[k]), 0] for k in keys]
+            while k_cursors[0][1] < k_cursors[0][0]:
+                mo = sklearn.clone(m)
+                kv = mo.get_params()
+                for i, kc in enumerate(k_cursors):
+                    kv[keys[i]] = p[keys[i]][kc[1]]
+                mo.set_params(**kv)
+                base_models.append(mo)
+                for i in range(len(keys) - 1, -1, -1):
+                    if k_cursors[i][1] < k_cursors[i][0] - 1:
+                        k_cursors[i][1] += 1
+                        break
+                    else:
+                        if i == 0:
+                            k_cursors[i][1] += 1
+                        else:
+                            k_cursors[i][1] = 0
+
+        return base_models
 
     @staticmethod
     def _get_model_idx(model, last_result):
@@ -117,9 +118,10 @@ class BinaryClassifier(BaseEstimator):
         return info
 
     @staticmethod
-    def hillclimbing(X, y, model_labels=None, last_result={}, cv=3, logger=None):
+    def auto(X, y, model_labels=None, last_result={}, cv=5, best_n=1, logger=None):
 
-        base_models = _build_base_models(model_labels, BASE_CLASSIFY_MODELS)
+        base_models = BinaryClassifier._build_base_models(
+            model_labels, BASE_CLASSIFY_MODELS)
 
         skf = StratifiedKFold(random_state=42, n_splits=cv)
         kfolds = list(skf.split(X, y))
@@ -128,6 +130,7 @@ class BinaryClassifier(BaseEstimator):
         model_probs = []
         model_scores = []
         model_scores_std = []
+
         for i, m in enumerate(base_models):
             logger.info('begin [%d] for %s' %
                         (i, BinaryClassifier._model_info(m)))
@@ -158,67 +161,60 @@ class BinaryClassifier(BaseEstimator):
             last_result['model_scores'] = model_scores
             last_result['model_scores_std'] = model_scores_std
 
-        # keep better models
-        sorted_base_models = sorted(
-            enumerate(model_scores), key=lambda x: x[1], reverse=True)
-        keep_model_size = int(len(model_scores) / 5)
-        keep_model_idxs = [i for i, _ in list(sorted_base_models)[
-            :keep_model_size]]
+        # choose top base models to build level 1
+        model_groups = {}
+        for i, m in enumerate(base_models):
+            m_name = m.__class__.__name__
+            if m_name not in model_groups:
+                model_groups[m_name] = []
+            model_groups[m_name].append((i, model_scores[i]))
+        level1_models = []
+        for k, models in model_groups.items():
+            level1_models += [m[0] for m in list(
+                sorted(model_groups[k], key=lambda x:x[1], reverse=True))[:best_n]]
 
-        # make ensembles
-        en_times = 20
-        rs = check_random_state(42)
-        bag_frac = 0.25
-        best_n = 3
-        MIN_EPS = 1e-3
-        ensemble = Counter()
-        for i in range(en_times):
-            idxs = rs.permutation(keep_model_idxs)
-            cand_idxs = idxs[:int(len(idxs) * bag_frac)]
-            ens = Counter(cand_idxs[:best_n])
-            en_score, _ = BinaryClassifier._calc_en_score(
-                ens, base_models, model_probs, y, kfolds)
-            while True:
-                find_m = False
-                for k in cand_idxs:
-                    en_copy = ens.copy()
-                    en_copy.update({k: 1})
-                    en_copy_score, _ = BinaryClassifier._calc_en_score(
-                        en_copy, base_models, model_probs, y, kfolds)
-                    if en_copy_score - en_score > MIN_EPS:
-                        ens = en_copy
-                        en_score = en_copy_score
-                        find_m = True
-                        break
-                if not find_m:
-                    break
-            ensemble += ens
-            logger.info('ensembling %d %s' % (i, ens))
+        # use lr as level 2
+        # level2_model=
 
-        logger.info('top models')
-        for i, s in sorted_base_models:
+        logger.info('level1 models')
+        for i in level1_models:
             logger.info('[%d] %.3f %.3f %s' %
-                        (i, s, model_scores_std[i], BinaryClassifier._model_info(base_models[i])))
-
-        en_score, en_score_std = BinaryClassifier._calc_en_score(
-            ensemble, base_models, model_probs, y, kfolds)
-        logger.info('ensemble result %.3f, %.3f, %s' %
-                    (en_score, en_score_std, ensemble))
+                        (i, model_scores[i], model_scores_std[i], BinaryClassifier._model_info(base_models[i])))
 
         return BinaryClassifier(**{'base_models': base_models,
-                                   'sorted_base_models': sorted_base_models,
-                                   'ensemble': ensemble,
+                                   'level1_models': level1_models,
+                                   'cv': cv,
                                    })
 
     def fit(self, X, y):
-        self.best_model = [(self.base_models[i].fit(X, y), w)
-                           for i, w in self.ensemble.items()]
+        skf = StratifiedKFold(random_state=42, n_splits=self.cv)
+        X_level2 = np.zeros((len(y), len(self.level1_models)))
+        for l, m_i in enumerate(self.level1_models):
+            y1 = np.array([])
+            for tr_i, ts_i in skf.split(X, y):
+                model = self.base_models[m_i]
+                model.fit(X[tr_i], y[tr_i])
+                prob = model.predict_proba(X[ts_i])
+                y_pred = (prob[:, 0] < prob[:, 1]).astype('int')
+                y1 = np.concatenate([y1, y_pred])
+            X_level2[:, l] = y1
 
-    def select(self, en_idx):
-        self.best_en_idx = en_idx
+        lr = LogisticRegression()
+        lr.fit(X_level2, y)
 
-    def get_nth_model(self, m_idx):
-        return self.base_models[self.sorted_base_models[m_idx][0]]
+        self.level2_model = lr
+
+    def predict(self, X):
+        X_level2 = np.zeros((X.shape[0], len(self.level1_models)))
+        for l, m_i in enumerate(self.level1_models):
+            model = self.base_models[m_i]
+            prob = model.predict_proba(X)
+            y_pred = (prob[:, 0] < prob[:, 1]).astype('int')
+            X_level2[:, l] = y_pred
+
+        return self.level2_model.predict(X_level2)
+    # def get_nth_best_model(self, m_idx):
+    #     return self.base_models[self.sorted_base_models[m_idx][0]]
 
     @staticmethod
     def _calc_model_score(model, X, y, kfolds):
@@ -233,54 +229,10 @@ class BinaryClassifier(BaseEstimator):
             model.fit(X_train, y_train)
             prob = model.predict_proba(X_test)
             y_pred = (prob[:, 0] < prob[:, 1]).astype('int')
-            # y_pred = np.array([model.classes_[i]
-            #                    for i in cls_idx])
             score += accuracy_score(y_test, y_pred)
             scores.append(score)
             probs.append(prob)
         return probs, score / len(kfolds), np.std(scores)
-
-    @staticmethod
-    def _calc_en_score(ensemble, base_models, model_probs, y, kfolds):
-        score = 0.
-        scores = []
-        for i, (_, ts_i) in enumerate(kfolds):
-            probs = 0.
-            weights = 0
-            for m_i, m_c in ensemble.items():
-                probs += model_probs[m_i][i] * m_c
-                weights += m_c
-            avg_prob = probs / weights
-            y_pred = (avg_prob[:, 0] < avg_prob[:, 1]).astype('int')
-            # y_pred = np.array([base_models[0].classes_[i]
-            #                    for i in cls_idx])
-            score += accuracy_score(y[ts_i], y_pred)
-            scores.append(score)
-        return score / len(kfolds), np.std(scores)
-
-    def predict(self, X):
-        probs = 0.
-        weights = 0
-        for m, w in self.best_model:
-            probs += m.predict_proba(X) * w
-            weights += w
-        avg_prob = probs / weights
-        cls_idx = (avg_prob[:, 0] < avg_prob[:, 1]).astype('int')
-        # y_pred = np.array([self.base_models[0].classes_[i] for i in cls_idx])
-        y_pred = cls_idx
-        return y_pred
-
-
-class TestAutoClassifier(ut.TestCase):
-    def testBuildBaseModels(self):
-        models = _build_base_models([LogisticRegression()],
-                                    [{'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000], 'penalty':['l1', 'l2'], 'class_weight':['balanced', None]}])
-        # self.assertEqual(2,len(models))
-        # self.assertEqual(10, models[1].C)
-        self.assertEqual(28, len(models))
-
-    def testFit(self):
-        pass
 
 
 if __name__ == '__main__':
