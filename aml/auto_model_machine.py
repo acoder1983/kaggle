@@ -13,12 +13,14 @@ import random
 import sklearn
 from sklearn.utils import check_random_state
 from sklearn.base import BaseEstimator
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier, AdaBoostClassifier, ExtraTreesClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
+from sklearn.gaussian_process import GaussianProcessClassifier
 
 BASE_CLASSIFY_MODELS = {
     'lr': (LogisticRegression(random_state=42),
@@ -47,8 +49,28 @@ BASE_CLASSIFY_MODELS = {
 
     'knn': (KNeighborsClassifier(),
             {'n_neighbors': [3, 5, 8],
-             'weights': ['uniform', 'distance']})
+             'weights': ['uniform', 'distance']}),
 
+    'mlp': (MLPClassifier(random_state=42),
+            {'hidden_layer_sizes': [(50,), (100,), (200,)],
+             'activation': ['relu', 'identity', 'logistic', 'tanh']
+             }),
+
+    'gau': (GaussianProcessClassifier(random_state=42),
+            {'max_iter_predict': [100, 150, 200],
+
+             }),
+
+    'ada': (AdaBoostClassifier(random_state=42),
+            {'learning_rate': [0.01, 0.1, 1.],
+             'n_estimators': [50, 100, 300, 500],
+             }),
+
+    'ext': (ExtraTreesClassifier(random_state=42),
+            {'n_estimators': [10, 50, 100, 500],
+             'max_features': [None, 'sqrt', 'log2'],
+             'max_depth': [3, 5, 8],
+             }),
 
 }
 
@@ -167,11 +189,11 @@ class BinaryClassifier(BaseEstimator):
             m_name = m.__class__.__name__
             if m_name not in model_groups:
                 model_groups[m_name] = []
-            model_groups[m_name].append((i, model_scores[i]))
+            model_groups[m_name].append((i, model_scores[i],model_scores_std[i]))
         level1_models = []
         for k, models in model_groups.items():
             level1_models += [m[0] for m in list(
-                sorted(model_groups[k], key=lambda x:x[1], reverse=True))[:best_n]]
+                sorted(model_groups[k], key=lambda x:x[1]-x[2], reverse=True))[:best_n]]
 
         # use lr as level 2
         # level2_model=
@@ -199,10 +221,11 @@ class BinaryClassifier(BaseEstimator):
                 y1 = np.concatenate([y1, y_pred])
             X_level2[:, l] = y1
 
-        lr = LogisticRegression()
-        lr.fit(X_level2, y)
+        self.level2_model = LogisticRegression()
+        # self.level2_model=RandomForestClassifier()
+        # self.level2_model=GradientBoostingClassifier()
+        self.level2_model.fit(X_level2, y)
 
-        self.level2_model = lr
 
     def predict(self, X):
         X_level2 = np.zeros((X.shape[0], len(self.level1_models)))
@@ -229,8 +252,9 @@ class BinaryClassifier(BaseEstimator):
             model.fit(X_train, y_train)
             prob = model.predict_proba(X_test)
             y_pred = (prob[:, 0] < prob[:, 1]).astype('int')
-            score += accuracy_score(y_test, y_pred)
-            scores.append(score)
+            acc = accuracy_score(y_test, y_pred)
+            scores.append(acc)
+            score += acc
             probs.append(prob)
         return probs, score / len(kfolds), np.std(scores)
 
